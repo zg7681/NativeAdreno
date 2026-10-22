@@ -4,14 +4,13 @@
 #include <IOKit/IOLib.h>
 
 /* Pinned definitions: CP_SQE_INSTR_BASE is the 64-bit register at dword offset
- * 0x0830 for A6XX..A7XX (a6xx.xml). CP_THREAD_CONTROL is opcode 0x17 with
+ * 0x0830 for A6XX..A7XX and 0x0816 for A8XX (a6xx.xml; the chip table's). CP_THREAD_CONTROL is opcode 0x17 with
  * CONCURRENT_BIN_DISABLE at bit 27, and CP_ME_INIT is opcode 0x48 with seven
  * payload words (adreno_pm4.xml). The payload values are a7xx_cp_init in
  * a6xx_gpu.c: mask BIT(0)|BIT(1)|BIT(3)|BIT(6)|BIT(8), three hardware
  * contexts, 0x20000000 error detection, 0x00000002 operation mode, the
  * power-up register list address and BIT(31) to read it. */
 enum : uint32_t {
-    CpSqeInstrBase = 0x0830,
     CpThreadControlOpcode = 0x17,
     CpMeInitOpcode = 0x48,
     CpConcurrentBinDisable = 1u << 27,
@@ -21,6 +20,12 @@ enum : uint32_t {
 IOReturn NativeAdrenoCpInit::poison()
 {
     poisoned_=true;return kIOReturnIOError;
+}
+IOReturn NativeAdrenoCpInit::useChip(const NativeAdrenoChipRegs *chip)
+{
+    if(done_ || poisoned_)return kIOReturnBusy;
+    if(!chip || (chip->generation!=7 && chip->generation!=8))return kIOReturnBadArgument;
+    chip_=chip;return kIOReturnSuccess;
 }
 uint32_t NativeAdrenoCpInit::meInitMask()
 {
@@ -38,10 +43,10 @@ IOReturn NativeAdrenoCpInit::run(const NativeAdrenoRingIo *io,NativeAdrenoRing *
         return kIOReturnBadArgument;
     if(config->sqe_base_programmed) {
         uint32_t lo=0,hi=0;
-        if(!io->read32 || io->read32(io->cookie,CpSqeInstrBase,&lo) || io->read32(io->cookie,CpSqeInstrBase+1,&hi) ||
+        if(!io->read32 || io->read32(io->cookie,chip_->cp_sqe_instr_base,&lo) || io->read32(io->cookie,chip_->cp_sqe_instr_base+1,&hi) ||
             (((uint64_t)hi<<32)|lo)!=config->sqe_iova)return poison();
-    } else if(io->write32(io->cookie,CpSqeInstrBase,(uint32_t)config->sqe_iova) ||
-        io->write32(io->cookie,CpSqeInstrBase+1,(uint32_t)(config->sqe_iova>>32)))
+    } else if(io->write32(io->cookie,chip_->cp_sqe_instr_base,(uint32_t)config->sqe_iova) ||
+        io->write32(io->cookie,chip_->cp_sqe_instr_base+1,(uint32_t)(config->sqe_iova>>32)))
         return poison();
     uint32_t words[CpInitWords]={0};
     if(AdrenoPM4Type7(CpThreadControlOpcode,1,&words[0])!=AdrenoPM4Success ||

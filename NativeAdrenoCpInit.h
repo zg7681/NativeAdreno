@@ -21,12 +21,16 @@ struct NativeAdrenoCpInitConfig {
  * cannot re-initialize the same object. */
 class NativeAdrenoCpInit final {
     bool done_=false,poisoned_=false;
+    const NativeAdrenoChipRegs *chip_=&NativeAdrenoChipA7xx;
     IOReturn poison();
 public:
     NativeAdrenoCpInit()=default;
     ~NativeAdrenoCpInit()=default;
     NativeAdrenoCpInit(const NativeAdrenoCpInit &)=delete;
     NativeAdrenoCpInit &operator=(const NativeAdrenoCpInit &)=delete;
+    /* Before run: the generation whose CP_SQE_INSTR_BASE is programmed (A7XX unless named); a8xx_cp_init sends the same
+     * CP_THREAD_CONTROL and CP_ME_INIT payload as a7xx_cp_init. */
+    IOReturn useChip(const NativeAdrenoChipRegs *);
     IOReturn run(const NativeAdrenoRingIo *,NativeAdrenoRing *,
         const NativeAdrenoCpInitConfig *,uint32_t *fence);
     bool completed() const {return done_;}

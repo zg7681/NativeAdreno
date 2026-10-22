@@ -126,6 +126,34 @@ int main()
         CHECK(r.submitFramed(words,1,&end)==kIOReturnSuccess && end==2);
         CHECK(peer.writes.back().second==69+11+1+31 && op(ring[69+2])==0x46 && op(ring[69+7])==0x17 && ring[69+8]==3);
     }
+    /* A8XX: CP_SCRATCH_GLOBAL(2) is the fence scratch, and the context entry also clears the sliced perfcounter SRAM and polls the
+     * A8XX status register; the chip can only be named before attach. */
+    {
+        reset();NativeAdrenoRing r;
+        CHECK(r.useChip(nullptr)==kIOReturnBadArgument && r.chip()==&NativeAdrenoChipA7xx);
+        CHECK(r.useChip(&NativeAdrenoChipA8xx)==kIOReturnSuccess && r.chip()==&NativeAdrenoChipA8xx);
+        CHECK(attach(r)==kIOReturnSuccess);
+        CHECK(r.useChip(&NativeAdrenoChipA7xx)==kIOReturnBusy && r.chip()==&NativeAdrenoChipA8xx);
+        CHECK(peer.writes.size()==7 && peer.writes[6].first==0x082c && peer.writes[6].second==0);
+        const uint32_t words[1]={0x11111111};
+        uint32_t end=0;
+        r.requestContextReset();
+        CHECK(r.submitFramed(words,1,&end)==kIOReturnSuccess && end==1);
+        CHECK(peer.writes.back().first==0x0807 && peer.writes.back().second==11+28+1+31);
+        auto op=[](uint32_t header) {return (header>>28)==7u?(header>>16)&0x7fu:0xffu;};
+        CHECK(op(ring[15])==0x17 && ring[16]==0x80000001u && (ring[17]>>8&0x3ffffu)==0x449 && ring[18]==1);
+        CHECK((ring[19]>>28)==4u && (ring[19]>>8&0x3ffffu)==0x5e8 && (ring[19]&0x7fu)==1 && ring[20]==1);
+        CHECK(op(ring[21])==0x46 && ring[22]==0x31);
+        CHECK(op(ring[23])==0x3c && ring[24]==3 && ring[25]==0x19f && ring[26]==0 && ring[27]==1 && ring[28]==1 && ring[29]==0);
+        CHECK(op(ring[30])==0x46 && ring[31]==0x32 && op(ring[32])==0x46 && ring[33]==0x33 && op(ring[34])==0x26);
+        CHECK(op(ring[35])==0x17 && ring[36]==3 && op(ring[37])==0x65 && ring[38]==0x101 && ring[39]==words[0]);
+        CHECK((ring[40]>>8&0x3ffffu)==0x82c && ring[41]==1);   /* the framed fence's scratch write */
+        fence[1]=1;
+        const uint32_t at=11+28+1+31;
+        CHECK(r.submit(words,1,&end)==kIOReturnSuccess && end==2);   /* a plain kernel submission: scratch, then CP_EVENT_WRITE7 */
+        CHECK(ring[at]==words[0] && (ring[at+1]>>8&0x3ffffu)==0x82c && ring[at+2]==2 && op(ring[at+3])==0x46);
+        CHECK(peer.writes.back().first==0x0807 && peer.writes.back().second==at+1+7);
+    }
     /* Wrap-around emission keeps packets contiguous modulo the ring. */
     {
         reset();NativeAdrenoRing r;CHECK(attach(r)==kIOReturnSuccess);
@@ -211,7 +239,7 @@ int main()
         peer.fail_acquire=peer.acquire+1;
         uint32_t observed=0;
         CHECK(r.wait(1,&clock_,10,&observed)==NativeAdrenoRingFencePoisoned && r.poisoned());++cases;
-        std::printf("PASS: 1 exact ring programming and submission, 1 wrap submission, 1 refused re-attach, 7 write/1 read attach failures and 4 post-commit poison cases over a software CP register peer (%u failure cases)\n",
+        std::printf("PASS: 1 exact ring programming and submission, 1 A8XX ring and context entry, 1 wrap submission, 1 refused re-attach, 7 write/1 read attach failures and 4 post-commit poison cases over a software CP register peer (%u failure cases)\n",
             cases);
     }
 }

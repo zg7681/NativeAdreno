@@ -59,6 +59,25 @@ int main()
         CHECK(ring.wait(1,&clock_,1000,nullptr)==NativeAdrenoRingFenceComplete);
         CHECK(ring.detach()==kIOReturnSuccess);
     }
+    /* A8XX: CP_SQE_INSTR_BASE at 0x0816 and the fence scratch at CP_SCRATCH_GLOBAL(2); the CP_ME_INIT words are a7xx_cp_init's. */
+    {
+        reset();NativeAdrenoRing ring;CHECK(ring.useChip(&NativeAdrenoChipA8xx)==kIOReturnSuccess);
+        CHECK(ring.attach(&io,&cache,ringmem,sizeof(ringmem),0x100000,fencemem,sizeof(fencemem),0x108000)==kIOReturnSuccess);
+        NativeAdrenoCpInit init;
+        CHECK(init.useChip(nullptr)==kIOReturnBadArgument && init.useChip(&NativeAdrenoChipA8xx)==kIOReturnSuccess);
+        NativeAdrenoCpInitConfig config{0x400000,0x301000,0};
+        uint32_t fence=0;
+        CHECK(init.run(&io,&ring,&config,&fence)==kIOReturnSuccess && fence==1);
+        bool paired=false;
+        for(size_t i=0;i+1<peer.writes.size();++i)
+            if(peer.writes[i]==0x0816 && peer.writes[i+1]==0x0817)paired=true;
+        CHECK(paired && peer.regs[0x0816]==0x400000 && peer.regs[0x0817]==0 && peer.regs[0x0830]==0);
+        CHECK(ringmem[3]==0x14b && ringmem[7]==0x301000 && ringmem[9]==(1u<<31));
+        CHECK((ringmem[10]>>8&0x3ffffu)==0x082c && ringmem[11]==1);
+        CHECK(init.useChip(&NativeAdrenoChipA7xx)==kIOReturnBusy);
+        fencemem[1]=1;
+        CHECK(ring.wait(1,&clock_,1000,nullptr)==NativeAdrenoRingFenceComplete);
+    }
     /* Refusals precede MMIO and ring writes. */
     {
         reset();NativeAdrenoRing ring;CHECK(ring.attach(&io,&cache,ringmem,sizeof(ringmem),0x100000,fencemem,sizeof(fencemem),0x108000)==kIOReturnSuccess);
@@ -90,5 +109,5 @@ int main()
         CHECK(init.run(&io,&ring,&config,&fence)==kIOReturnIOError && init.poisoned());
         CHECK(ring.poisoned() && ring.detach()==kIOReturnBusy);
     }
-    std::printf("PASS: 1 exact CP_ME_INIT sequence with SQE base, 8 pre-MMIO refusals, 1 SQE write failure and 1 ring commit failure over a software CP register peer\n");
+    std::printf("PASS: 1 exact CP_ME_INIT sequence with SQE base, 1 A8XX sequence, 8 pre-MMIO refusals, 1 SQE write failure and 1 ring commit failure over a software CP register peer\n");
 }

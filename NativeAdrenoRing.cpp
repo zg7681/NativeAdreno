@@ -15,7 +15,6 @@ enum : uint32_t {
     RingRptrAddress = 0x0804, /* 64-bit CP_RB_RPTR_ADDR */
     RingRptr = 0x0806,
     RingWptr = 0x0807,
-    RingScratch = 0x0885,     /* CP_SCRATCH(2) for A6XX..A7XX */
     RingFenceOpcode = 0x46,   /* CP_EVENT_WRITE7 on A7XX */
     RingFenceEvent = 0x31,    /* CACHE_CLEAN */
     RingFenceEnable = 1u << 27,
@@ -46,16 +45,17 @@ enum : uint32_t {
      * RBBM_PERFCTR_SRAM_INIT_CMD (0x050e) write and CACHE_INVALIDATE (0x31), after a CP_WAIT_TIMESTAMP on the last fence, then the
      * CP_WAIT_REG_MEM (0x3c, WRITE_EQ) on RBBM_PERFCTR_SRAM_INIT_STATUS (0x050f) bit 0 that Linux always emits after the SRAM init
      * write. Without that wait the client's first IB started while the SRAM was still clearing; on sheng (int-064..067) the CP then
-     * stopped on the IB's first CP_THREAD_CONTROL, while the same IB retired under the Linux driver. */
+     * stopped on the IB's first CP_THREAD_CONTROL, while the same IB retired under the Linux driver. The SRAM init registers
+     * and the fence scratch come from the chip table (NativeAdrenoChip.h): those offsets are A7XX's, and A8XX also clears the
+     * sliced SRAM. */
     RingResetContextState = 0x1f,
     RingResetAll = 0xf,
     RingLrzFlushInvalidate = 0x26,
     RingCacheInvalidate = 0x31,
-    RingPerfctrSramInit = 0x050e,
-    RingPerfctrSramInitStatus = 0x050f,
     RingWaitRegMem = 0x3c,
     RingWaitWriteEq = 3,
     RingResetWords = 26,
+    RingSliceSramWords = 2,   /* A8XX: RBBM_SLICE_PERFCTR_SRAM_INIT_CMD beside the unsliced one, as a6xx_set_pagetable() writes both */
     RingFenceWords = 7,       /* kernel bring-up submissions: TYPE4 scratch + TYPE7 event */
     RingFramedFenceWords = 31,/* user submissions: scratch, BV timestamp, BR wait, ring timestamp */
     RingBvFenceOffset = 12    /* msm_rbmemptrs.bv_fence; +8 is bv_rptr, the BV RPTR shadow hw init programs */
@@ -70,6 +70,16 @@ extern "C" {volatile uint32_t native_adreno_ring_log[4][4+112];volatile uint32_t
 IOReturn NativeAdrenoRing::poison()
 {
     poisoned_=true;return kIOReturnIOError;
+}
+IOReturn NativeAdrenoRing::useChip(const NativeAdrenoChipRegs *chip)
+{
+    if(attached_ || poisoned_)return kIOReturnBusy;
+    if(!chip || (chip->generation!=7 && chip->generation!=8))return kIOReturnBadArgument;
+    chip_=chip;return kIOReturnSuccess;
+}
+uint32_t NativeAdrenoRing::resetWords() const
+{
+    return RingResetWords+(chip_->slice_perfctr_sram_init_cmd?RingSliceSramWords:0);
 }
 IOReturn NativeAdrenoRing::readRptr(uint32_t *value)
 {
@@ -91,9 +101,9 @@ static size_t packet(uint32_t *words,size_t at,uint32_t opcode,const uint32_t *p
 IOReturn NativeAdrenoRing::emitPrologue(uint32_t at,bool reset,uint32_t *end)
 {
     const uint32_t mask=(uint32_t)(ring_bytes_/4-1);
-    uint32_t words[RingPrologueWords+RingResetWords]={0};
+    uint32_t words[RingPrologueWords+RingResetWords+RingSliceSramWords]={0};
     const uint32_t br=RingSyncThreads|RingThreadBr,syncBoth=RingSyncThreads|RingThreadBoth,both=RingThreadBoth,marker=0x101;
-    const uint32_t count=RingPrologueWords+(reset?RingResetWords:0);
+    const uint32_t count=RingPrologueWords+(reset?resetWords():0);
     size_t n=packet(words,0,RingThreadControl,&br,1);
     if(reset) {
         const uint64_t at4=fence_iova_+4;
@@ -105,9 +115,12 @@ IOReturn NativeAdrenoRing::emitPrologue(uint32_t at,bool reset,uint32_t *end)
         if(n)n=packet(words,n,RingThreadControl,&syncBoth,1);
         if(n)n=packet(words,n,RingFenceOpcode,&lrz,1);
         if(n)n=packet(words,n,RingThreadControl,&br,1);
-        if(n && AdrenoPM4Type4(RingPerfctrSramInit,1,&words[n])==AdrenoPM4Success) {words[n+1]=1;n+=2;} else n=0;
+        if(n && AdrenoPM4Type4(chip_->perfctr_sram_init_cmd,1,&words[n])==AdrenoPM4Success) {words[n+1]=1;n+=2;} else n=0;
+        if(n && chip_->slice_perfctr_sram_init_cmd) {
+            if(AdrenoPM4Type4(chip_->slice_perfctr_sram_init_cmd,1,&words[n])==AdrenoPM4Success) {words[n+1]=1;n+=2;} else n=0;
+        }
         if(n)n=packet(words,n,RingFenceOpcode,&invalidate,1);
-        const uint32_t sram[6]={RingWaitWriteEq,RingPerfctrSramInitStatus,0,1,1,0};
+        const uint32_t sram[6]={RingWaitWriteEq,chip_->perfctr_sram_init_status,0,1,1,0};
         if(n)n=packet(words,n,RingWaitRegMem,sram,6);
     }
     const uint32_t flush=RingCacheFlush7,invalidate7=RingCacheInvalidate7;
@@ -125,7 +138,7 @@ IOReturn NativeAdrenoRing::emitFence(uint32_t at,uint32_t seqno,uint32_t *end)
 {
     const uint32_t mask=(uint32_t)(ring_bytes_/4-1);
     uint32_t words[RingFenceWords]={0};
-    if(AdrenoPM4Type4(RingScratch,1,&words[0])!=AdrenoPM4Success ||
+    if(AdrenoPM4Type4(chip_->cp_scratch2,1,&words[0])!=AdrenoPM4Success ||
         AdrenoPM4Type7(RingFenceOpcode,4,&words[2])!=AdrenoPM4Success)return poison();
     words[1]=seqno;
     words[3]=RingFenceEvent|RingFenceEnable|RingFenceIrq;
@@ -141,7 +154,7 @@ IOReturn NativeAdrenoRing::emitFramedFence(uint32_t at,uint32_t seqno,uint32_t *
 {
     const uint32_t mask=(uint32_t)(ring_bytes_/4-1);
     uint32_t words[RingFramedFenceWords]={0};
-    if(AdrenoPM4Type4(RingScratch,1,&words[0])!=AdrenoPM4Success)return poison();
+    if(AdrenoPM4Type4(chip_->cp_scratch2,1,&words[0])!=AdrenoPM4Success)return poison();
     words[1]=seqno;
     /* The timestamp goes to +4 (msm_rbmemptrs.fence), where wait() reads it; +0 is the CP's RPTR shadow. */
     const uint64_t at4=fence_iova_+4,bv=fence_iova_+RingBvFenceOffset;
@@ -182,7 +195,7 @@ IOReturn NativeAdrenoRing::attach(const NativeAdrenoRingIo *io,const NativeAdren
     const uint32_t base_lo=(uint32_t)ring_iova_,base_hi=(uint32_t)(ring_iova_>>32);
     const uint32_t rptr_lo=(uint32_t)fence_iova_,rptr_hi=(uint32_t)(fence_iova_>>32);
     const uint32_t writes[]={RingBase,base_lo,RingBase+1,base_hi,RingControl,control,
-        RingRptrAddress,rptr_lo,RingRptrAddress+1,rptr_hi,RingWptr,0,RingScratch,0};
+        RingRptrAddress,rptr_lo,RingRptrAddress+1,rptr_hi,RingWptr,0,chip_->cp_scratch2,0};
     for(size_t i=0;i<sizeof(writes)/sizeof(writes[0]);i+=2)
         if(io_.write32(io_.cookie,writes[i],writes[i+1]))return poison();
     uint32_t rptr=0;IOReturn status=readRptr(&rptr);
@@ -214,7 +227,7 @@ IOReturn NativeAdrenoRing::submitWords(const uint32_t *words,size_t word_count,u
     if(!words || !word_count || word_count>SIZE_MAX/sizeof(uint32_t))return kIOReturnBadArgument;
     const uint32_t size_words=(uint32_t)(ring_bytes_/4),mask=size_words-1;
     const bool reset=framed && reset_pending_;
-    const uint32_t extra=framed?RingPrologueWords+(reset?RingResetWords:0)+RingFramedFenceWords:RingFenceWords;
+    const uint32_t extra=framed?RingPrologueWords+(reset?resetWords():0)+RingFramedFenceWords:RingFenceWords;
     if(word_count>size_words-extra-8)return kIOReturnNoResources;
     uint32_t rptr=0;IOReturn status=readRptr(&rptr);
     if(status)return status;

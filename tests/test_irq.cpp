@@ -15,7 +15,7 @@ static int write32(void *c,uint32_t reg,uint32_t v)
     CHECK(c==&peer && reg<0x10000);++peer.writes;
     if(peer.writes==peer.fail_write)return 1;
     peer.regs[reg]=v;peer.last_write_reg=reg;
-    if(reg==0x0037)peer.cleared=v;
+    if(reg==0x0037 || reg==0x0061)peer.cleared=v;   /* RBBM_INT_CLEAR_CMD, A7XX and A8XX */
     return 0;
 }
 static int read32(void *c,uint32_t reg,uint32_t *v)
@@ -83,6 +83,31 @@ int main()
         CHECK(irq.handle(&result)==kIOReturnSuccess && !result.flags && peer.cleared==0);
         CHECK(irq.detach()==kIOReturnSuccess);
     }
+    /* A8XX: the same RBBM bits at the A8XX offsets, and CP_INTERRUPT_STATUS_GLOBAL's per-pipe fault bits as the CP errors. */
+    {
+        reset();NativeAdrenoIrq irq;
+        CHECK(irq.useChip(nullptr)==kIOReturnBadArgument && irq.cpErrors()==NativeAdrenoIrq::cpErrorMask());
+        CHECK(irq.useChip(&NativeAdrenoChipA8xx)==kIOReturnSuccess && irq.cpErrors()==0x007f007fu);
+        CHECK(irq.attach(&io)==kIOReturnSuccess && irq.useChip(&NativeAdrenoChipA7xx)==kIOReturnBusy);
+        uint32_t programmed=0;
+        CHECK(irq.programMask(&programmed)==kIOReturnSuccess && programmed==NativeAdrenoIrq::mask());
+        CHECK(peer.regs[0x0062]==programmed && peer.regs[0x0038]==0);
+        NativeAdrenoIrqResult result;
+        peer.regs[0x006a]=1u<<20;
+        CHECK(irq.handle(&result)==kIOReturnSuccess && result.flags==NativeAdrenoIrqFence);
+        CHECK(peer.cleared==(1u<<20) && peer.last_write_reg==0x0061);
+        /* Every per-pipe hardware or software fault bit is a CP error (HWFAULTAQE0 bit 3, SWFAULTBR bit 16); bit 8 lies outside
+         * A8XX_CP_GLOBAL_INT_MASK. */
+        peer.regs[0x006a]=1u<<9;peer.regs[0x08b5]=0x8;
+        peer.regs[0x084f]=0x00100005;
+        CHECK(irq.handle(&result)==kIOReturnSuccess && result.flags==(NativeAdrenoIrqCpError|NativeAdrenoIrqFatal));
+        CHECK(result.cp_status==0x8 && result.protect_status==0x00100005);
+        peer.regs[0x006a]=1u<<9;peer.regs[0x08b5]=1u<<16;
+        CHECK(irq.handle(&result)==kIOReturnSuccess && result.flags==(NativeAdrenoIrqCpError|NativeAdrenoIrqFatal));
+        peer.regs[0x006a]=1u<<9;peer.regs[0x08b5]=1u<<8;   /* outside A8XX_CP_GLOBAL_INT_MASK */
+        CHECK(irq.handle(&result)==kIOReturnSuccess && !result.flags && result.cp_status==(1u<<8));
+        CHECK(irq.detach()==kIOReturnSuccess);
+    }
     /* Failures poison because the source may still be armed. */
     {
         reset();NativeAdrenoIrq irq;CHECK(irq.attach(&io)==kIOReturnSuccess);
@@ -105,5 +130,5 @@ int main()
         CHECK(fifth.detach()==kIOReturnNotReady);
         CHECK(irq.detach()==kIOReturnNotReady && second.detach()==kIOReturnNotReady);
     }
-    std::printf("PASS: 1 exact A7XX mask programming, 10 decoded interrupt/status cases, 5 poison-on-unacknowledged cases over a software register peer\n");
+    std::printf("PASS: 1 exact A7XX mask programming, 10 decoded interrupt/status cases, 4 A8XX cases, 5 poison-on-unacknowledged cases over a software register peer\n");
 }

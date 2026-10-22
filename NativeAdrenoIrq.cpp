@@ -2,17 +2,11 @@
 #include "NativeAdrenoIrq.h"
 #include <IOKit/IOLib.h>
 
-/* Register offsets and bit positions are the pinned Linux definitions in
- * registers/adreno/a6xx.xml: RBBM_INT_0_STATUS 0x0201, RBBM_INT_CLEAR_CMD
- * 0x0037, RBBM_INT_0_MASK 0x0038, CP_INTERRUPT_STATUS 0x0823 and
- * CP_PROTECT_STATUS 0x0824, plus the A7XX_INT_MASK enable set from
- * a6xx_gpu.c. No bit is inferred beyond those sources. */
+/* Bit positions are the pinned Linux definitions in registers/adreno/a6xx.xml (A6XX_RBBM_INT_0_MASK), plus the
+ * A7XX_INT_MASK enable set from a6xx_gpu.c (A8XX_INT_MASK in a8xx_gpu.c is the same set). The register offsets come
+ * from the chip table: RBBM_INT_0_STATUS 0x0201, RBBM_INT_CLEAR_CMD 0x0037, RBBM_INT_0_MASK 0x0038,
+ * CP_INTERRUPT_STATUS 0x0823 and CP_PROTECT_STATUS 0x0824 on A7XX. No bit is inferred beyond those sources. */
 enum : uint32_t {
-    IrqRbbmStatus = 0x0201,
-    IrqRbbmClear = 0x0037,
-    IrqRbbmMask = 0x0038,
-    IrqCpStatus = 0x0823,
-    IrqCpProtect = 0x0824,
     IrqBitIdle = 1u << 0,
     IrqBitAhb = 1u << 1,
     IrqBitAtbAsync = 1u << 6,
@@ -50,8 +44,6 @@ static constexpr uint32_t kKnown = IrqBitIdle | IrqBitAhb | IrqBitAtbAsync | Irq
 static constexpr uint32_t kEnable = IrqBitAhb | IrqBitAtbAsync | IrqBitGpc | IrqBitCpSw |
     IrqBitCpHw | IrqBitCpPm4 | IrqBitCpRbDone | IrqBitCpFence | IrqBitAtbBus |
     IrqBitHang | IrqBitUcheOob | IrqBitUcheTrap | IrqBitTsbWrite | IrqBitFuse;
-/* CP_INTERRUPT_STATUS error bits, including the A7XX LPAC/BV replicas. */
-static constexpr uint32_t kCpErrors = 0x3fff7u;
 IOReturn NativeAdrenoIrq::poison()
 {
     poisoned_=true;return kIOReturnIOError;
@@ -62,7 +54,13 @@ uint32_t NativeAdrenoIrq::mask()
 }
 uint32_t NativeAdrenoIrq::cpErrorMask()
 {
-    return kCpErrors;
+    return NativeAdrenoChipA7xx.cp_error_bits;
+}
+IOReturn NativeAdrenoIrq::useChip(const NativeAdrenoChipRegs *chip)
+{
+    if(attached_ || poisoned_)return kIOReturnBusy;
+    if(!chip || (chip->generation!=7 && chip->generation!=8))return kIOReturnBadArgument;
+    chip_=chip;return kIOReturnSuccess;
 }
 IOReturn NativeAdrenoIrq::attach(const NativeAdrenoRingIo *io)
 {
@@ -81,8 +79,8 @@ IOReturn NativeAdrenoIrq::programMask(uint32_t *programmed)
     if(!attached_ || poisoned_)return kIOReturnNotReady;
     if(programmed)*programmed=0;
     uint32_t readback=0;
-    if(io_.write32(io_.cookie,IrqRbbmMask,kEnable))return poison();
-    if(io_.read32(io_.cookie,IrqRbbmMask,&readback))return poison();
+    if(io_.write32(io_.cookie,chip_->rbbm_int_mask,kEnable))return poison();
+    if(io_.read32(io_.cookie,chip_->rbbm_int_mask,&readback))return poison();
     if(readback!=kEnable)return poison();
     enabled_=readback;
     if(programmed)*programmed=readback;
@@ -94,9 +92,9 @@ IOReturn NativeAdrenoIrq::handle(NativeAdrenoIrqResult *result)
     *result={};
     if(!attached_ || poisoned_)return kIOReturnNotReady;
     uint32_t status=0;
-    if(io_.read32(io_.cookie,IrqRbbmStatus,&status))return poison();
+    if(io_.read32(io_.cookie,chip_->rbbm_int_status,&status))return poison();
     /* Linux acknowledges the whole read status before decoding it. */
-    if(io_.write32(io_.cookie,IrqRbbmClear,status))return poison();
+    if(io_.write32(io_.cookie,chip_->rbbm_int_clear,status))return poison();
     if(io_.barrier(io_.cookie))return poison();
     uint32_t flags=0,cp_status=0,protect=0;
     if(status&IrqBitCpFence)flags|=NativeAdrenoIrqFence;
@@ -107,9 +105,9 @@ IOReturn NativeAdrenoIrq::handle(NativeAdrenoIrqResult *result)
     if(status&(IrqBitAhb|IrqBitGpc|IrqBitAtbAsync|IrqBitAtbBus))flags|=NativeAdrenoIrqBusError;
     if(status&(IrqBitTsbWrite|IrqBitFuse))flags|=NativeAdrenoIrqSecurity;
     if(status&IrqBitCpHw) {
-        if(io_.read32(io_.cookie,IrqCpStatus,&cp_status))return poison();
-        if(cp_status&kCpErrors) {
-            if(io_.read32(io_.cookie,IrqCpProtect,&protect))return poison();
+        if(io_.read32(io_.cookie,chip_->cp_int_status,&cp_status))return poison();
+        if(cp_status&chip_->cp_error_bits) {
+            if(io_.read32(io_.cookie,chip_->cp_protect_status,&protect))return poison();
             flags|=NativeAdrenoIrqCpError;
         }
     }

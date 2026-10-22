@@ -14,10 +14,12 @@ static int read32(void *cookie,uint32_t address,uint32_t *value)
 {
     CHECK(cookie==&peer && value);++peer.reads;
     if(peer.reads==peer.fail_read)return 1;
-    if(address==NativeAdrenoTimer::gmuLowOffset() || address==NativeAdrenoTimer::cpLowRegister()) {
+    if(address==NativeAdrenoTimer::gmuLowOffset() || address==NativeAdrenoTimer::cpLowRegister() ||
+        address==NativeAdrenoChipA8xx.cp_always_on_counter) {
         peer.last_low_address=address;*value=peer.low;return 0;
     }
-    if(address==NativeAdrenoTimer::gmuHighOffset() || address==NativeAdrenoTimer::cpHighRegister()) {
+    if(address==NativeAdrenoTimer::gmuHighOffset() || address==NativeAdrenoTimer::cpHighRegister() ||
+        address==NativeAdrenoChipA8xx.cp_always_on_counter+1) {
         peer.last_high_address=address;
         /* Emulate a high-word change between the bracketing reads. */
         *value=peer.high;
@@ -55,6 +57,17 @@ int main()
         CHECK(cp.attach(&io,NativeAdrenoTimeCp)==kIOReturnSuccess);
         CHECK(cp.read(&ticks)==kIOReturnSuccess && ticks==UINT64_C(0x0123456789abcdef));
         CHECK(peer.last_low_address==0x0980 && peer.last_high_address==0x0981);
+    }
+    /* A8XX: the CP source reads CP_ALWAYS_ON_COUNTER at 0x08e7; the chip can only be named before attach. */
+    {
+        peer=Peer{};peer.low=0x89abcdefu;peer.high=0x01234567u;
+        NativeAdrenoTimer cp;
+        CHECK(cp.useChip(nullptr)==kIOReturnBadArgument);
+        CHECK(cp.useChip(&NativeAdrenoChipA8xx)==kIOReturnSuccess);
+        CHECK(cp.attach(&io,NativeAdrenoTimeCp)==kIOReturnSuccess && cp.useChip(&NativeAdrenoChipA7xx)==kIOReturnBusy);
+        uint64_t ticks=0;
+        CHECK(cp.read(&ticks)==kIOReturnSuccess && ticks==UINT64_C(0x0123456789abcdef));
+        CHECK(peer.last_low_address==0x08e7 && peer.last_high_address==0x08e8);
     }
     /* A high-word change is retried, then read consistently. */
     {
@@ -94,5 +107,5 @@ int main()
         CHECK(timer.read(&ticks)==kIOReturnTimeout && !ticks);
         CHECK(unsettled_reads==3*8);
     }
-    std::printf("PASS: 1 derived-offset check, 2 stable reads, 1 rollover retry, 1 I/O failure and 1 bounded torn-loop timeout over a software counter peer\n");
+    std::printf("PASS: 1 derived-offset check, 2 stable reads, 1 A8XX read, 1 rollover retry, 1 I/O failure and 1 bounded torn-loop timeout over a software counter peer\n");
 }

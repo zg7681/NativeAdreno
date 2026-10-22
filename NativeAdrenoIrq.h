@@ -2,6 +2,7 @@
 #ifndef NATIVE_ADRENO_IRQ_H
 #define NATIVE_ADRENO_IRQ_H
 #include "NativeAdrenoRing.h"
+#include "NativeAdrenoChip.h"
 #include <stdint.h>
 
 enum NativeAdrenoIrqFlag {
@@ -19,7 +20,7 @@ enum NativeAdrenoIrqFlag {
 struct NativeAdrenoIrqResult {
     uint32_t flags, status, unknown, cp_status, protect_status;
 };
-/* A7XX RBBM/CP interrupt decode and acknowledgement, not an XNU interrupt
+/* A7XX/A8XX RBBM/CP interrupt decode and acknowledgement, not an XNU interrupt
  * source. IO read/write take dword register indices. The hardware interrupt
  * must already be masked at the controller by the caller, and the caller must
  * serialize handle() against every other MMIO user. Mask programming happens
@@ -30,12 +31,16 @@ class NativeAdrenoIrq final {
     NativeAdrenoRingIo io_{};
     uint32_t enabled_=0;
     bool attached_=false,poisoned_=false;
+    const NativeAdrenoChipRegs *chip_=&NativeAdrenoChipA7xx;
     IOReturn poison();
 public:
     NativeAdrenoIrq()=default;
     ~NativeAdrenoIrq()=default;
     NativeAdrenoIrq(const NativeAdrenoIrq &)=delete;
     NativeAdrenoIrq &operator=(const NativeAdrenoIrq &)=delete;
+    /* Before attach: the generation whose RBBM/CP status registers are decoded (A7XX unless named). The RBBM bits are the
+     * same A6XX_RBBM_INT_0_MASK bitset on both, and A8XX_INT_MASK equals A7XX_INT_MASK. */
+    IOReturn useChip(const NativeAdrenoChipRegs *);
     IOReturn attach(const NativeAdrenoRingIo *);
     IOReturn detach();
     /* The exact A7XX enable set: AHB, ATB async, GPC, CP_SW, CP_HW, PM4,
@@ -45,7 +50,8 @@ public:
      * an error reported here cannot be hidden by a later clear failure. */
     IOReturn handle(NativeAdrenoIrqResult *);
     static uint32_t mask();
-    static uint32_t cpErrorMask();
+    static uint32_t cpErrorMask();             /* A7XX's */
+    uint32_t cpErrors() const {return chip_->cp_error_bits;}
     bool poisoned() const {return poisoned_;}
     uint32_t enabled() const {return enabled_;}
 };
