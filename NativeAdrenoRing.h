@@ -54,10 +54,11 @@ class NativeAdrenoRing final {
     bool attached_=false,poisoned_=false,reset_pending_=false;
     const NativeAdrenoChipRegs *chip_=&NativeAdrenoChipA7xx;
     uint32_t user_thread_=3;   /* CP_THREAD_CONTROL thread before the user words: 3 BOTH (a7xx_submit), 1 BR */
+    uint32_t next_user_thread_=0;   /* the next framed submission's thread in place of user_thread_; 0 none */
     IOReturn poison();
     uint32_t resetWords() const;
     IOReturn readRptr(uint32_t *);
-    IOReturn emitPrologue(uint32_t at,bool reset,uint32_t *end);
+    IOReturn emitPrologue(uint32_t at,bool reset,uint32_t thread,uint32_t *end);
     IOReturn emitFence(uint32_t at,uint32_t seqno,uint32_t *end);
     IOReturn emitFramedFence(uint32_t at,uint32_t seqno,uint32_t *end);
     IOReturn submitWords(const uint32_t *words,size_t word_count,uint32_t *fence,bool framed);
@@ -69,11 +70,12 @@ public:
     /* Before attach: the generation whose fence scratch and perfcounter SRAM registers the ring uses (A7XX unless named). */
     IOReturn useChip(const NativeAdrenoChipRegs *);
     const NativeAdrenoChipRegs *chip() const {return chip_;}
-    /* Before attach: the thread the user words start on, 3 BOTH (default, as a7xx_submit() selects it) or 1 BR. A board whose user
-     * streams never enable concurrent binning can start them on BR: a submission that begins in the middle of a Turnip command
-     * buffer (one too large for a single job) has no command-buffer prologue to select BR, so under BOTH the A840's BV thread ran
-     * its 2D blits while BR went ahead and waited for an idle GPU that never came. */
+    /* Before attach: the thread the user words start on, 3 BOTH (default, as a7xx_submit() selects it) or 1 BR. BR suits only streams
+     * that never switch threads themselves: Turnip's command-buffer prologue (tu_init_hw) needs BV to see its buffers, and with every
+     * job on BR the Adreno 840 stopped at Turnip's first submission. For Turnip, NativeAdrenoSubmit::setContinuationThread decides per job. */
     IOReturn setUserThread(uint32_t thread);
+    /* The next framed submission's user thread (1 BR, 3 BOTH) in place of setUserThread's, once; 0 clears it. Allowed while attached. */
+    IOReturn setNextUserThread(uint32_t thread);
     uint32_t userThread() const {return user_thread_;}
     /* ring_bytes is a power of two in [8KiB,1MiB]; ring_iova must be aligned
      * to ring_bytes. fence_bytes >=64 and fence_iova 8-aligned. The fence page

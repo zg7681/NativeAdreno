@@ -16,6 +16,8 @@ extern "C" volatile uint32_t native_adreno_coherence[8];
 /* The write-combine audit (int-100), see NativeAdrenoSubmit.cpp, and the submission (1-based) that ended the trust; 0 = never. */
 extern "C" volatile uint32_t native_adreno_wc_audit[6];
 extern "C" volatile uint32_t native_adreno_wc_distrusted;
+/* setContinuationThread: [0] jobs that began a Turnip command buffer (BOTH), [1] continuations started on BR. */
+extern "C" volatile uint32_t native_adreno_thread_jobs[2];
 struct NativeAdrenoSubmitStats {
     uint32_t submissions,completed,timeouts,poisoned_jobs;
     size_t references_held,references_retired,peak_jobs;
@@ -42,6 +44,7 @@ class NativeAdrenoSubmit final {
     NativeAdrenoSubmitStats stats_{};
     bool attached_=false,poisoned_=false;
     uint32_t audit_tick_=0;   /* submissions since attach; every eighth one audits its IB lines */
+    bool continuation_=false; /* setContinuationThread */
     Job *find(uint32_t fence);
     Job *free();
     IOReturn release(Job &);
@@ -52,6 +55,11 @@ public:
     NativeAdrenoSubmit(const NativeAdrenoSubmit &)=delete;
     NativeAdrenoSubmit &operator=(const NativeAdrenoSubmit &)=delete;
     IOReturn attach(NativeAdrenoVm *,NativeAdrenoRing *);
+    /* On: a job whose first buffer does not begin a Turnip command buffer (tu_init_hw()'s first packet, CP_THREAD_CONTROL BOTH) continues
+     * one the client split across jobs (its kernel driver submits at most NativeAdrenoAbiMaxBuffers buffers per job) and starts on BR, the
+     * thread Turnip's own prologue leaves; a job that begins one starts on BOTH as a7xx_submit() does. For clients that never enable
+     * concurrent binning: under BOTH, the Adreno 840's BV thread ran a continuation's 2D blits while BR waited for an idle GPU. */
+    void setContinuationThread(bool on) {continuation_=on;}
     /* Refuses while jobs are outstanding or poisoned; the caller must have
      * stopped the GPU and observed every fence before calling this. */
     IOReturn detach();

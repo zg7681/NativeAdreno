@@ -10,6 +10,7 @@ enum : uint32_t {SubmitIndirectBuffer=0x3f,SubmitIbWords=3,SubmitMaxJobs=8,
     SubmitMaxBuffers=16,SubmitMaxIbBytes=0xfffffu*4u,
     SubmitAuditBytes=256u*1024u};   /* IB bytes the write-combine audit compares per submission */
 extern "C" {volatile uint32_t native_adreno_coherence[8];}
+extern "C" {volatile uint32_t native_adreno_thread_jobs[2];}
 /* The submission (1-based count) at which the write-combine audit found a dirty IB line or failed; 0 = never. */
 extern "C" {volatile uint32_t native_adreno_wc_distrusted;}
 /* The write-combine audit before each submission while trusted: [0] submissions audited, [1] IB lines compared, [2] dirty lines,
@@ -170,12 +171,17 @@ IOReturn NativeAdrenoSubmit::submit(const NativeAdrenoSubmitBuffer *buffers,size
         return status;
     }
     {
-        const uint32_t slot=native_adreno_ib_log_count&3;uint32_t head[28];
-        (void)vm_->peekWords(buffers[0].iova,head,28);
+        const uint32_t slot=native_adreno_ib_log_count&3;uint32_t head[28]={};
+        const bool peeked=vm_->peekWords(buffers[0].iova,head,28)==kIOReturnSuccess;
         native_adreno_ib_log[slot][0]=ring_->lastSubmitted()+1;native_adreno_ib_log[slot][1]=(uint32_t)buffers[0].iova;
         native_adreno_ib_log[slot][2]=(uint32_t)(buffers[0].iova>>32);native_adreno_ib_log[slot][3]=(uint32_t)buffers[0].bytes;
         for(unsigned i=0;i<28;++i)native_adreno_ib_log[slot][4+i]=head[i];
         native_adreno_ib_log_count=native_adreno_ib_log_count+1;
+        if(continuation_ && peeked) {   /* unreadable words: the ring's own thread */
+            const bool begins=head[0]==0x70970001u && (head[1]&3u)==3u;   /* CP_THREAD_CONTROL BOTH: tu_init_hw() */
+            ring_->setNextUserThread(begins?3u:1u);
+            native_adreno_thread_jobs[begins?0:1]=native_adreno_thread_jobs[begins?0:1]+1;
+        }
     }
     status=ring_->submitFramed(words,word_count,&value);
     if(status) {

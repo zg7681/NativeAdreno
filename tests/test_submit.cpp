@@ -254,7 +254,25 @@ int main()
         CHECK(submit.detach()==kIOReturnNotReady);
         CHECK(submit.submit(nullptr,1,0,nullptr)==kIOReturnBadArgument);
     }
-    std::printf("PASS: 1 execbuf submission with exact IB packet and fence, 8 pre-reference refusals, 1 duplicate-buffer reference case and 1 poisoned-commit retention case over software SMMU/CP peers; 2 write-combine audit cases (trusted, dirty and failed)\n");
+    /* setContinuationThread: a job whose first buffer begins with tu_init_hw()'s CP_THREAD_CONTROL BOTH starts on BOTH, any other on BR. */
+    {
+        Path p;CHECK(exposed(p)==kIOReturnSuccess);
+        p.submit.setContinuationThread(true);
+        NativeAdrenoSubmitBuffer buffer{p.handle,0x800000,4096};
+        volatile uint32_t *ib=static_cast<volatile uint32_t *>(p.object.mapping());
+        const uint32_t starts=native_adreno_thread_jobs[0],continues=native_adreno_thread_jobs[1];
+        uint32_t fence=0;
+        ib[0]=0x70970001u;ib[1]=3;
+        CHECK(p.submit.submit(&buffer,1,0,&fence)==kIOReturnSuccess && fence==1);
+        CHECK((ringmem[7]>>16&0x7fu)==0x17 && ringmem[8]==3);
+        ib[0]=0x48850104u;ib[1]=0x1100;   /* a register write: the middle of a command buffer */
+        CHECK(p.submit.submit(&buffer,1,0,&fence)==kIOReturnSuccess && fence==2);
+        CHECK((ringmem[46+7]>>16&0x7fu)==0x17 && ringmem[46+8]==1);
+        CHECK(native_adreno_thread_jobs[0]==starts+1 && native_adreno_thread_jobs[1]==continues+1);
+        fencemem[1]=2;
+        CHECK(p.submit.waitAll(&ringclock,1000)==kIOReturnSuccess);
+    }
+    std::printf("PASS: 1 execbuf submission with exact IB packet and fence, 8 pre-reference refusals, 1 duplicate-buffer reference case and 1 poisoned-commit retention case over software SMMU/CP peers; 2 write-combine audit cases (trusted, dirty and failed); 1 continuation-thread pair (BOTH, BR)\n");
 }
 /* Physical-page maintenance (imported BOs): record it; no host page is touched. */
 /* Host double: the page attribute change of user BOs has no host equivalent (no host page is touched). */

@@ -83,6 +83,12 @@ IOReturn NativeAdrenoRing::setUserThread(uint32_t thread)
     if(thread!=RingThreadBr && thread!=RingThreadBoth)return kIOReturnBadArgument;
     user_thread_=thread;return kIOReturnSuccess;
 }
+IOReturn NativeAdrenoRing::setNextUserThread(uint32_t thread)
+{
+    if(poisoned_)return kIOReturnNotReady;
+    if(thread && thread!=RingThreadBr && thread!=RingThreadBoth)return kIOReturnBadArgument;
+    next_user_thread_=thread;return kIOReturnSuccess;
+}
 uint32_t NativeAdrenoRing::resetWords() const
 {
     return RingResetWords+(chip_->slice_perfctr_sram_init_cmd?RingSliceSramWords:0);
@@ -104,11 +110,11 @@ static size_t packet(uint32_t *words,size_t at,uint32_t opcode,const uint32_t *p
 /* Thread selection and IFPC disable before the user buffers, as a7xx_submit() does; the first submission after
  * requestContextReset() also carries the context entry a6xx_set_pagetable() emits when a new context first submits.
  * Every prologue ends its BR-only part with the GPU cache flush and invalidate described at RingCacheFlush7. */
-IOReturn NativeAdrenoRing::emitPrologue(uint32_t at,bool reset,uint32_t *end)
+IOReturn NativeAdrenoRing::emitPrologue(uint32_t at,bool reset,uint32_t thread,uint32_t *end)
 {
     const uint32_t mask=(uint32_t)(ring_bytes_/4-1);
     uint32_t words[RingPrologueWords+RingResetWords+RingSliceSramWords]={0};
-    const uint32_t br=RingSyncThreads|RingThreadBr,syncBoth=RingSyncThreads|RingThreadBoth,user=user_thread_,marker=0x101;
+    const uint32_t br=RingSyncThreads|RingThreadBr,syncBoth=RingSyncThreads|RingThreadBoth,user=thread,marker=0x101;
     const uint32_t count=RingPrologueWords+(reset?resetWords():0);
     size_t n=packet(words,0,RingThreadControl,&br,1);
     if(reset) {
@@ -133,7 +139,7 @@ IOReturn NativeAdrenoRing::emitPrologue(uint32_t at,bool reset,uint32_t *end)
     if(n)n=packet(words,n,RingFenceOpcode,&flush,1);
     if(n)n=packet(words,n,RingFenceOpcode,&invalidate7,1);
     if(n)n=packet(words,n,RingWaitForIdle,nullptr,0);
-    /* The user words' thread: BOTH as a7xx_submit() selects it, or BR where the board asks (setUserThread). */
+    /* The user words' thread: BOTH as a7xx_submit() selects it, or BR where the board asks (setUserThread, setNextUserThread). */
     if(n)n=packet(words,n,RingThreadControl,&user,1);
     if(n)n=packet(words,n,RingSetMarker,&marker,1);
     if(n!=count)return poison();
@@ -229,6 +235,8 @@ IOReturn NativeAdrenoRing::submitFramed(const uint32_t *words,size_t word_count,
 }
 IOReturn NativeAdrenoRing::submitWords(const uint32_t *words,size_t word_count,uint32_t *fence,bool framed)
 {
+    const uint32_t thread=next_user_thread_?next_user_thread_:user_thread_;   /* one submission only, used or not */
+    next_user_thread_=0;
     if(!fence)return kIOReturnBadArgument;*fence=0;
     if(!attached_ || poisoned_)return kIOReturnNotReady;
     if(!words || !word_count || word_count>SIZE_MAX/sizeof(uint32_t))return kIOReturnBadArgument;
@@ -242,7 +250,7 @@ IOReturn NativeAdrenoRing::submitWords(const uint32_t *words,size_t word_count,u
     if(word_count+extra+8>size_words-used)return kIOReturnNoResources;
     uint32_t at=next_;
     if(framed) {
-        status=emitPrologue(at,reset,&at);
+        status=emitPrologue(at,reset,thread,&at);
         if(status)return status;
     }
     for(size_t i=0;i<word_count;++i)ring_[(at+i)&mask]=words[i];

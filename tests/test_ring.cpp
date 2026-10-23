@@ -75,6 +75,18 @@ int main()
         for(unsigned i=0;i<4;++i)CHECK(ring[11+i]==words[i]);
         CHECK(op(ring[42])==0x17 && ring[43]==3 && op(ring[44])==0x65 && ring[45]==0x100);   /* the epilogue is unchanged */
     }
+    /* setNextUserThread: one submission only, while attached; the configured thread afterwards. */
+    {
+        reset();NativeAdrenoRing r;
+        CHECK(attach(r)==kIOReturnSuccess && r.setNextUserThread(2)==kIOReturnBadArgument);
+        const uint32_t words[4]={0x11111111,0x22222222,0x33333333,0x44444444};
+        uint32_t end=0;
+        auto op=[](uint32_t header) {return (header>>28)==7u?(header>>16)&0x7fu:0xffu;};
+        CHECK(r.setNextUserThread(1)==kIOReturnSuccess && r.submitFramed(words,4,&end)==kIOReturnSuccess && end==1);
+        CHECK(op(ring[7])==0x17 && ring[8]==1);
+        CHECK(r.submitFramed(words,4,&end)==kIOReturnSuccess && end==2);
+        CHECK(op(ring[46+7])==0x17 && ring[46+8]==3 && ring[46+11]==words[0]);
+    }
     /* Exact register programming and one complete submission. */
     {
         reset();NativeAdrenoRing r;
@@ -254,7 +266,7 @@ int main()
         peer.fail_acquire=peer.acquire+1;
         uint32_t observed=0;
         CHECK(r.wait(1,&clock_,10,&observed)==NativeAdrenoRingFencePoisoned && r.poisoned());++cases;
-        std::printf("PASS: 1 exact ring programming and submission, 1 BR user-thread prologue, 1 A8XX ring and context entry, 1 wrap submission, 1 refused re-attach, 7 write/1 read attach failures and 4 post-commit poison cases over a software CP register peer (%u failure cases)\n",
+        std::printf("PASS: 1 exact ring programming and submission, 1 BR user-thread prologue, 1 one-shot user thread, 1 A8XX ring and context entry, 1 wrap submission, 1 refused re-attach, 7 write/1 read attach failures and 4 post-commit poison cases over a software CP register peer (%u failure cases)\n",
             cases);
     }
 }
