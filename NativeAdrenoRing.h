@@ -53,6 +53,7 @@ class NativeAdrenoRing final {
     uint32_t next_=0,rptr_shadow_=0,seqno_=0,completed_=0,submissions_=0;
     bool attached_=false,poisoned_=false,reset_pending_=false;
     const NativeAdrenoChipRegs *chip_=&NativeAdrenoChipA7xx;
+    uint32_t user_thread_=3;   /* CP_THREAD_CONTROL thread before the user words: 3 BOTH (a7xx_submit), 1 BR */
     IOReturn poison();
     uint32_t resetWords() const;
     IOReturn readRptr(uint32_t *);
@@ -68,6 +69,12 @@ public:
     /* Before attach: the generation whose fence scratch and perfcounter SRAM registers the ring uses (A7XX unless named). */
     IOReturn useChip(const NativeAdrenoChipRegs *);
     const NativeAdrenoChipRegs *chip() const {return chip_;}
+    /* Before attach: the thread the user words start on, 3 BOTH (default, as a7xx_submit() selects it) or 1 BR. A board whose user
+     * streams never enable concurrent binning can start them on BR: a submission that begins in the middle of a Turnip command
+     * buffer (one too large for a single job) has no command-buffer prologue to select BR, so under BOTH the A840's BV thread ran
+     * its 2D blits while BR went ahead and waited for an idle GPU that never came. */
+    IOReturn setUserThread(uint32_t thread);
+    uint32_t userThread() const {return user_thread_;}
     /* ring_bytes is a power of two in [8KiB,1MiB]; ring_iova must be aligned
      * to ring_bytes. fence_bytes >=64 and fence_iova 8-aligned. The fence page
      * layout is: +0 CP read-pointer shadow, +4 completed timestamp, +8 spare.

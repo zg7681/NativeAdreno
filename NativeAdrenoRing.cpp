@@ -77,6 +77,12 @@ IOReturn NativeAdrenoRing::useChip(const NativeAdrenoChipRegs *chip)
     if(!chip || (chip->generation!=7 && chip->generation!=8))return kIOReturnBadArgument;
     chip_=chip;return kIOReturnSuccess;
 }
+IOReturn NativeAdrenoRing::setUserThread(uint32_t thread)
+{
+    if(attached_ || poisoned_)return kIOReturnBusy;
+    if(thread!=RingThreadBr && thread!=RingThreadBoth)return kIOReturnBadArgument;
+    user_thread_=thread;return kIOReturnSuccess;
+}
 uint32_t NativeAdrenoRing::resetWords() const
 {
     return RingResetWords+(chip_->slice_perfctr_sram_init_cmd?RingSliceSramWords:0);
@@ -102,7 +108,7 @@ IOReturn NativeAdrenoRing::emitPrologue(uint32_t at,bool reset,uint32_t *end)
 {
     const uint32_t mask=(uint32_t)(ring_bytes_/4-1);
     uint32_t words[RingPrologueWords+RingResetWords+RingSliceSramWords]={0};
-    const uint32_t br=RingSyncThreads|RingThreadBr,syncBoth=RingSyncThreads|RingThreadBoth,both=RingThreadBoth,marker=0x101;
+    const uint32_t br=RingSyncThreads|RingThreadBr,syncBoth=RingSyncThreads|RingThreadBoth,user=user_thread_,marker=0x101;
     const uint32_t count=RingPrologueWords+(reset?resetWords():0);
     size_t n=packet(words,0,RingThreadControl,&br,1);
     if(reset) {
@@ -127,7 +133,8 @@ IOReturn NativeAdrenoRing::emitPrologue(uint32_t at,bool reset,uint32_t *end)
     if(n)n=packet(words,n,RingFenceOpcode,&flush,1);
     if(n)n=packet(words,n,RingFenceOpcode,&invalidate7,1);
     if(n)n=packet(words,n,RingWaitForIdle,nullptr,0);
-    if(n)n=packet(words,n,RingThreadControl,&both,1);
+    /* The user words' thread: BOTH as a7xx_submit() selects it, or BR where the board asks (setUserThread). */
+    if(n)n=packet(words,n,RingThreadControl,&user,1);
     if(n)n=packet(words,n,RingSetMarker,&marker,1);
     if(n!=count)return poison();
     for(uint32_t i=0;i<count;++i)ring_[(at+i)&mask]=words[i];

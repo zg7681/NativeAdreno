@@ -60,6 +60,21 @@ static int attach(NativeAdrenoRing &r)
 {return r.attach(&io,&cache,ring,sizeof(ring),0x100000,fence,sizeof(fence),0x108000);}
 int main()
 {
+    /* setUserThread: BR in place of BOTH before the user words (and only there), only before attach, only 1 or 3. */
+    {
+        reset();NativeAdrenoRing r;
+        CHECK(r.userThread()==3 && r.setUserThread(2)==kIOReturnBadArgument && r.setUserThread(0)==kIOReturnBadArgument);
+        CHECK(r.setUserThread(1)==kIOReturnSuccess && r.userThread()==1);
+        CHECK(attach(r)==kIOReturnSuccess && r.setUserThread(3)==kIOReturnBusy && r.userThread()==1);
+        const uint32_t words[4]={0x11111111,0x22222222,0x33333333,0x44444444};
+        uint32_t end=0;
+        CHECK(r.submitFramed(words,4,&end)==kIOReturnSuccess && end==1);
+        auto op=[](uint32_t header) {return (header>>28)==7u?(header>>16)&0x7fu:0xffu;};
+        CHECK(op(ring[0])==0x17 && ring[1]==0x80000001u);
+        CHECK(op(ring[7])==0x17 && ring[8]==1 && op(ring[9])==0x65 && ring[10]==0x101);
+        for(unsigned i=0;i<4;++i)CHECK(ring[11+i]==words[i]);
+        CHECK(op(ring[42])==0x17 && ring[43]==3 && op(ring[44])==0x65 && ring[45]==0x100);   /* the epilogue is unchanged */
+    }
     /* Exact register programming and one complete submission. */
     {
         reset();NativeAdrenoRing r;
@@ -239,7 +254,7 @@ int main()
         peer.fail_acquire=peer.acquire+1;
         uint32_t observed=0;
         CHECK(r.wait(1,&clock_,10,&observed)==NativeAdrenoRingFencePoisoned && r.poisoned());++cases;
-        std::printf("PASS: 1 exact ring programming and submission, 1 A8XX ring and context entry, 1 wrap submission, 1 refused re-attach, 7 write/1 read attach failures and 4 post-commit poison cases over a software CP register peer (%u failure cases)\n",
+        std::printf("PASS: 1 exact ring programming and submission, 1 BR user-thread prologue, 1 A8XX ring and context entry, 1 wrap submission, 1 refused re-attach, 7 write/1 read attach failures and 4 post-commit poison cases over a software CP register peer (%u failure cases)\n",
             cases);
     }
 }
