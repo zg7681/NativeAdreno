@@ -11,7 +11,15 @@ extern "C" {int (*native_adreno_dram_read32)(uint64_t,uint32_t *);int (*native_a
  * attributes then needs no CPU cache maintenance. 0 keeps every mapping maintained as before. Counters: maintenance passes skipped for
  * coherent mappings at map, unmap, submission and completion. */
 extern "C" {volatile uint32_t native_adreno_io_coherent;volatile uint32_t native_adreno_coherent_skips[4];}
+/* ios-pandora's 0195: NativeMetal already flushes the surfaces a command buffer uses (flushSurfaces at commit and
+ * completion), so cleaning and invalidating every imported page on every submission is redundant (27 ms a frame for the 83
+ * surfaces backboardd had imported there). 0 = trust the client's flushes; the board sets 1 from myron-gpu-flushall=1. */
+extern "C" {volatile uint32_t native_adreno_flush_imports=0;}
 static bool coherentMapping(unsigned writeback) {return writeback && native_adreno_io_coherent;}
+/* GPU-written imports (render targets) are mapped non-coherent (the GPU stopped inside its end-of-pass clean writing them through
+ * write-back mappings), and the CPU never touches their pixels while the GPU owns them: they were cleaned when mapped and need no
+ * maintenance per submission, which cost about 60 ms per frame. */
+static bool importedUntouched(const NativeAdrenoMemory *memory) {return memory->imported() && native_adreno_io_coherent;}
 static bool overlap(uint64_t a,uint64_t ab,uint64_t b,uint64_t bb)
 {return a<b+bb && b<a+ab;}
 /* Mappings of one cache/shareability/privilege class may share pages; only pages shared across classes refuse. */
@@ -330,7 +338,8 @@ IOReturn NativeAdrenoVm::publishMapped()
     for(size_t i=0;i<NativeAdrenoVmMaxObjects;++i) {
         const Mapping &m=mappings_[i];
         if(!m.memory)continue;
-        if(coherentMapping(m.writeback)) {native_adreno_coherent_skips[2]=native_adreno_coherent_skips[2]+1;continue;}
+        if((!native_adreno_flush_imports && m.memory->imported()) || coherentMapping(m.writeback) || importedUntouched(m.memory))
+            {native_adreno_coherent_skips[2]=native_adreno_coherent_skips[2]+1;continue;}
         if(m.memory->publishForDevice(0,m.memory->bytes(),true,distrust_write_combined_))return fail(ArmSmmu4KIoError);
     }
     return kIOReturnSuccess;
@@ -341,7 +350,8 @@ IOReturn NativeAdrenoVm::acquireImported()
     for(size_t i=0;i<NativeAdrenoVmMaxObjects;++i) {
         const Mapping &m=mappings_[i];
         if(!m.memory || !m.memory->imported() || !(m.permissions&ArmSmmu4KWrite))continue;
-        if(coherentMapping(m.writeback)) {native_adreno_coherent_skips[3]=native_adreno_coherent_skips[3]+1;continue;}
+        if((!native_adreno_flush_imports && m.memory->imported()) || coherentMapping(m.writeback) || importedUntouched(m.memory))
+            {native_adreno_coherent_skips[3]=native_adreno_coherent_skips[3]+1;continue;}
         if(m.memory->acquireDeviceWrites(0,m.memory->bytes()))return fail(ArmSmmu4KIoError);
     }
     return kIOReturnSuccess;

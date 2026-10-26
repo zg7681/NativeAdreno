@@ -35,6 +35,8 @@ struct NativeAdrenoMetalDiag {
     char report[64];         /* the plugin's own result line (SetMetadata text), latest */
     char report2[64];        /* the plugin's Turnip-phase line (text starting "T " or "W "), latest */
     uint32_t grants;         /* opens granted to the render server by this driver in place of the sandbox verdict (the view in GpuPowerProbe.cpp ends before this) */
+    char pbf[64];            /* myron: the diagnostic daemon's line (SetMetadata text starting "D "), its own slot so the
+                              * bridge's periodic "PF ..." and Turnip's "T ..." telemetry cannot overwrite it */
 } native_adreno_metal_diag;
 /* BO CPU views (clientMemoryForType for a BO token): [0] calls, [1] new descriptors, [2] served from the view cache, [3] refused (not a BO / out of
  * resources), [4] last refusal's IOReturn, [5] threads inside now. int-115 showed a backboardd thread in IOConnectMapMemory64 ~650 times a second. */
@@ -403,11 +405,13 @@ static IOReturn runCore(AGXDeviceUserClient *connection,uint32_t method,const vo
 {
     if(method==NativeAdrenoMethodSetMetadata && input && input_size==sizeof(NativeAdrenoAbiMetadata)) {
         const NativeAdrenoAbiMetadata *meta=static_cast<const NativeAdrenoAbiMetadata *>(input);
-        /* The raw test's line and the Turnip phase's line ("T ..." result or "W ..." watchdog sample) are kept apart, so neither hides the other. */
+        /* The raw test's line and the Turnip phase's line ("T ..." result or "W ..." watchdog sample) are kept apart, so neither hides the other.
+         * "D ..." is myron's diagnostic daemon line and has its own slot: the Metal bridge publishes "PF ..." into report periodically. */
         const bool turnip=meta->bytes>=2 && (meta->text[0]=='T' || meta->text[0]=='W') && meta->text[1]==' ';
-        char *line=turnip?native_adreno_metal_diag.report2:native_adreno_metal_diag.report;
-        uint32_t n=meta->bytes<sizeof(native_adreno_metal_diag.report)-1?meta->bytes:uint32_t(sizeof(native_adreno_metal_diag.report)-1);
-        memset(line,0,sizeof(native_adreno_metal_diag.report));
+        const bool diagnostic=meta->bytes>=2 && meta->text[0]=='D' && meta->text[1]==' ';
+        char *line=diagnostic?native_adreno_metal_diag.pbf:turnip?native_adreno_metal_diag.report2:native_adreno_metal_diag.report;
+        uint32_t n=meta->bytes<sizeof(native_adreno_metal_diag.pbf)-1?meta->bytes:uint32_t(sizeof(native_adreno_metal_diag.pbf)-1);
+        memset(line,0,sizeof(native_adreno_metal_diag.pbf));
         memcpy(line,meta->text,n);
         native_adreno_metal_diag.reports=native_adreno_metal_diag.reports+1;
     }

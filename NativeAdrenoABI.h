@@ -12,7 +12,11 @@
  * rather than ignored. */
 enum {
     NativeAdrenoAbiVersion = 1,
-    NativeAdrenoAbiMaxBuffers = 16,
+    /* 128, not 16: the Turnip darwin backend submits one whole Turnip submission per call when it fits, so a command buffer is
+     * not cut into several kernel jobs mid-stream. A cut inside a command buffer let one CP thread run ahead into the next
+     * job (boot-myron-39: BV stopped in one job's tu_init_hw while BR was in another buffer). ios-pandora's bb20 hang dump
+     * showed the same stall with runs of 16/16/6 and settled on 128 (their 0194). */
+    NativeAdrenoAbiMaxBuffers = 128,
     NativeAdrenoAbiMaxBoBytesShift = 28, /* 256MiB per object */
     NativeAdrenoMethodQuery = 1,
     NativeAdrenoMethodBoAlloc = 2,
@@ -151,7 +155,7 @@ static_assert(sizeof(NativeAdrenoAbiBoAlloc) == 16, "ABI alloc layout");
 static_assert(sizeof(NativeAdrenoAbiBoMap) == 32, "ABI map layout");
 static_assert(sizeof(NativeAdrenoAbiBoImport) == 16, "ABI import layout");
 static_assert(sizeof(NativeAdrenoAbiSubmitBuffer) == 24, "ABI buffer layout");
-static_assert(sizeof(NativeAdrenoAbiSubmit) == 416, "ABI submit layout");
+static_assert(sizeof(NativeAdrenoAbiSubmit) == 3104, "ABI submit layout");
 static_assert(sizeof(NativeAdrenoAbiBoCpuMap) == 8, "ABI cpu map layout");
 static_assert(sizeof(NativeAdrenoAbiBoCpuMapReply) == 16, "ABI cpu map reply layout");
 static_assert(sizeof(NativeAdrenoAbiBoCpuUnmap) == 16, "ABI cpu unmap layout");

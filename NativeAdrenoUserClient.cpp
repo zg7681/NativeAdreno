@@ -267,7 +267,9 @@ IOReturn NativeAdrenoUserClient::mapBo(const NativeAdrenoAbiBoMap *request,
     /* Imported memory is the owner's cacheable memory (IOSurfaces, no-copy buffers): once the board proved IO coherence, the GPU maps it
      * write-back inner-shareable (Linux's IOMMU_CACHE PTE) and the CPU caches over it need no maintenance. The GPU's own BOs stay
      * non-cacheable: their CPU view is write-combined, and a snoop could find a stale line of the kernel's cacheable alias. */
-    const bool coherent=entry->memory.imported() && native_adreno_io_coherent;
+    /* Only memory the GPU never writes is mapped coherent: sysmem passes written through write-back inner-shareable mappings stopped
+     * the GPU inside its end-of-pass cache clean (BR and BV idle at the clean events), while non-coherent mappings never did. */
+    const bool coherent=entry->memory.imported() && native_adreno_io_coherent && !(permissions&2u);
     const IOReturn status=vm_->map(&entry->memory,0,request->iova,permissions,
         coherent?1u:request->writeback,coherent?3u:request->shareability,&handle);
     if(status)return status;
@@ -324,17 +326,21 @@ IOReturn NativeAdrenoUserClient::submit(const NativeAdrenoAbiSubmit *request,
         const IOReturn waited=submit_->observeFence((uint32_t)request->wait_fence,clock,wait_us);
         if(waited)return waited;
     }
-    NativeAdrenoSubmitBuffer buffers[NativeAdrenoAbiMaxBuffers];
+    /* 128 entries of 24 bytes stay off the kernel stack: this call already carries the 3104-byte wire record in dispatch(). */
+    struct Scratch {NativeAdrenoSubmitBuffer buffers[NativeAdrenoAbiMaxBuffers];};
+    Scratch *const scratch=static_cast<Scratch *>(IOMalloc(sizeof(Scratch)));
+    if(!scratch)return kIOReturnNoMemory;
+    struct FreeScratch {Scratch *p;~FreeScratch() {IOFree(p,sizeof(Scratch));}} freeScratch{scratch};
     for(uint32_t i=0;i<request->buffer_count;++i) {
         const NativeAdrenoAbiSubmitBuffer &wire=request->buffers[i];
         if(!wire.bytes || (wire.bytes&3))return kIOReturnBadArgument;
         Entry *entry=find(wire.handle);
         if(!entry || !entry->mapped_state)return kIOReturnBadArgument;
-        buffers[i]={entry->mapped,wire.iova,(size_t)wire.bytes};
+        scratch->buffers[i]={entry->mapped,wire.iova,(size_t)wire.bytes};
     }
     uint32_t fence=0;
     used_=true;
-    const IOReturn status=submit_->submit(buffers,request->buffer_count,
+    const IOReturn status=submit_->submit(scratch->buffers,request->buffer_count,
         queue_base_+static_cast<uint32_t>(request->queue),&fence);
     if(status)return status;
     reply->fence=fence;

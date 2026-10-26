@@ -9,6 +9,8 @@ struct NativeAdrenoSubmitBuffer {
     uint64_t iova;
     size_t bytes;      /* Complete indirect-buffer range in bytes. */
 };
+/* The indirect buffers of one job; the user client's NativeAdrenoAbiMaxBuffers is the same number (the wire limit). */
+enum : size_t {SubmitMaxBuffers = 128};
 /* Coherence samples (int-070): [0] submissions sampled; [1..3] the last one's first IB word through the kernel's cacheable alias,
  * through DRAM before and through DRAM after the CPU cache maintenance of every mapped BO (~0 when unreadable); [4] samples whose
  * three values differ and [5..7] the first such sample. */
@@ -35,7 +37,7 @@ class NativeAdrenoSubmit final {
     struct Job {
         uint32_t fence=0;
         size_t count=0;
-        uint64_t handles[16]{};
+        uint64_t handles[SubmitMaxBuffers]{};
         uint32_t queue=0;
         bool active=false;
     } jobs_[8];

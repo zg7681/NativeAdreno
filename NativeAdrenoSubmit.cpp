@@ -7,7 +7,7 @@
  * and IB_SIZE in dwords (bits 0..19), exactly as the pinned adreno_pm4.xml
  * domain states and Linux msm_gem_submit.c converts the userspace byte size. */
 enum : uint32_t {SubmitIndirectBuffer=0x3f,SubmitIbWords=3,SubmitMaxJobs=8,
-    SubmitMaxBuffers=16,SubmitMaxIbBytes=0xfffffu*4u,
+    SubmitMaxIbBytes=0xfffffu*4u,
     SubmitAuditBytes=256u*1024u};   /* IB bytes the write-combine audit compares per submission */
 extern "C" {volatile uint32_t native_adreno_coherence[8];}
 extern "C" {volatile uint32_t native_adreno_thread_jobs[2];}
@@ -79,9 +79,17 @@ IOReturn NativeAdrenoSubmit::submit(const NativeAdrenoSubmitBuffer *buffers,size
     if(!fence)return kIOReturnBadArgument;*fence=0;
     if(!attached_ || poisoned_)return kIOReturnNotReady;
     if(!buffers || !count || count>SubmitMaxBuffers)return kIOReturnBadArgument;
-    /* Every buffer is validated against the live VM before any reference. */
-    uint64_t handles[SubmitMaxBuffers];size_t handle_count=0;
-    uint32_t words[SubmitMaxBuffers*(1+SubmitIbWords)];size_t word_count=0;
+    /* Every buffer is validated against the live VM before any reference. 128 buffers would put about 4 KiB of arrays on
+     * the kernel stack on top of the caller's frames (ios-pandora moved theirs off it with the same 128 limit). */
+    struct Scratch {
+        uint64_t handles[SubmitMaxBuffers];
+        uint32_t words[SubmitMaxBuffers*(1+SubmitIbWords)];
+    };
+    Scratch *const scratch=static_cast<Scratch *>(IOMalloc(sizeof(Scratch)));
+    if(!scratch)return kIOReturnNoMemory;
+    struct FreeScratch {Scratch *p;~FreeScratch() {IOFree(p,sizeof(Scratch));}} freeScratch{scratch};
+    uint64_t *const handles=scratch->handles;size_t handle_count=0;
+    uint32_t *const words=scratch->words;size_t word_count=0;
     for(size_t i=0;i<count;++i) {
         const NativeAdrenoSubmitBuffer &buffer=buffers[i];
         if(!buffer.handle || !buffer.bytes || (buffer.bytes&3) || buffer.bytes>SubmitMaxIbBytes)
